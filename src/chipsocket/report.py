@@ -14,13 +14,14 @@ told you nothing.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from chipsocket.socket import BOUNDARY_TRIGGERS, OPERATIONS_TRIGGERS
+from chipsocket.socket import BOUNDARY_TRIGGERS, OPERATIONS_TRIGGERS, _jsonable
 
 
 def load_receipts(path: str | Path) -> list[dict[str, Any]]:
@@ -166,6 +167,174 @@ def _shadow_measures(rs: list[dict[str, Any]]) -> dict[str, Any]:
             "costUsd": round(m["costUsd"], 6),
         }
     return out
+
+
+# ── held-out scoring ────────────────────────────────────────────────────────
+
+
+def _member_values(r: dict[str, Any]) -> dict[str, tuple[str, Any, float | None]]:
+    """member id -> (outcome, value, score) for every member that ran on this call."""
+    out: dict[str, tuple[str, Any, float | None]] = {}
+    for a in r.get("attempts", []) + r.get("shadows", []):
+        out[_member_id(a["member"])] = (a["outcome"], a.get("value"), a.get("score"))
+    return out
+
+
+def score(
+    receipts: Iterable[dict[str, Any]],
+    truth: dict[str, Any],
+    key: Callable[[dict[str, Any]], str],
+    *,
+    compare: Callable[[Any, Any], bool] | None = None,
+    positive: Any = True,
+) -> dict[str, Any]:
+    """Score every member against a held-out truth, from receipts alone.
+
+    ``truth`` maps an input id to its expected value and ``key`` derives that id
+    from a receipt (usually from ``receipt["input"]``). Receipts whose id is not
+    in ``truth`` are ignored, so a live receipt stream and a labelled subset
+    can be scored with the same call.
+
+    Per member: how many labelled calls it *answered* (a value, whether or not
+    it was the one the socket returned), its accuracy on those, its coverage
+    (answered / labelled calls it saw), and — when ``truth`` is binary —
+    precision, recall and F1 for ``positive``. Abstentions are counted, not
+    scored: a member that abstains on the hard cases and is right on the rest
+    is exactly what a code member should be, and the coverage number is what
+    says how much of the work it took.
+    """
+    # Receipt values are record-shaped (dataclasses became dicts on the way
+    # in), so the truth is put through the same transform before comparing.
+    eq = compare or (lambda a, b: a == b)
+    pos = _jsonable(positive)
+    per: dict[str, dict[str, Any]] = {}
+    n_labelled = 0
+    for r in receipts:
+        k = key(r)
+        if k not in truth:
+            continue
+        n_labelled += 1
+        expected = _jsonable(truth[k])
+        for mid, (outcome, value, _score) in _member_values(r).items():
+            m = per.setdefault(mid, {"saw": 0, "answered": 0, "correct": 0, "abstained": 0, "failed": 0,
+                                     "tp": 0, "fp": 0, "fn": 0, "tn": 0})
+            m["saw"] += 1
+            if outcome == "value":
+                m["answered"] += 1
+                right = eq(value, expected)
+                m["correct"] += 1 if right else 0
+                is_pos_truth = eq(expected, pos)
+                is_pos_val = eq(value, pos)
+                if is_pos_val and is_pos_truth:
+                    m["tp"] += 1
+                elif is_pos_val:
+                    m["fp"] += 1
+                elif is_pos_truth:
+                    m["fn"] += 1
+                else:
+                    m["tn"] += 1
+            elif outcome == "abstained":
+                m["abstained"] += 1
+            else:
+                m["failed"] += 1
+    out: dict[str, Any] = {"labelled": n_labelled, "members": {}}
+    for mid, m in per.items():
+        p = m["tp"] / (m["tp"] + m["fp"]) if (m["tp"] + m["fp"]) else None
+        rc = m["tp"] / (m["tp"] + m["fn"]) if (m["tp"] + m["fn"]) else None
+        f1 = 2 * p * rc / (p + rc) if p and rc else None
+        out["members"][mid] = {
+            "saw": m["saw"], "answered": m["answered"], "abstained": m["abstained"], "failed": m["failed"],
+            "coverage": round(m["answered"] / m["saw"], 4) if m["saw"] else None,
+            "accuracy": round(m["correct"] / m["answered"], 4) if m["answered"] else None,
+            "precision": round(p, 4) if p is not None else None,
+            "recall": round(rc, 4) if rc is not None else None,
+            "f1": round(f1, 4) if f1 is not None else None,
+            "confusion": {"tp": m["tp"], "fp": m["fp"], "fn": m["fn"], "tn": m["tn"]},
+        }
+    return out
+
+
+def _bucket(sc: float, width: float) -> float:
+    return round(math.floor(sc / width + 1e-9) * width, 6)
+
+
+def by_band(
+    receipts: Iterable[dict[str, Any]],
+    truth: dict[str, Any],
+    key: Callable[[dict[str, Any]], str],
+    scorer: str,
+    *,
+    width: float = 0.05,
+    constants: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Every member's accuracy inside each bucket of one member's score.
+
+    ``scorer`` is a member that returns a score on its answers or abstentions
+    (a lexical similarity, a classifier margin). For each bucket of that score
+    this reports how often every member that answered was right, beside the
+    accuracy of each constant answer in ``constants`` (``{"always-no": False}``).
+    A bucket where a constant beats the model is a bucket the model should not
+    be asked about; that is the placement decision, read off labels.
+    """
+    consts = constants or {}
+    acc: dict[float, dict[str, list[int]]] = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+    for r in receipts:
+        k = key(r)
+        if k not in truth:
+            continue
+        expected = _jsonable(truth[k])
+        vals = _member_values(r)
+        if scorer not in vals or vals[scorer][2] is None:
+            continue
+        lo = _bucket(vals[scorer][2], width)
+        for name, c in consts.items():
+            cell = acc[lo][name]
+            cell[1] += 1
+            cell[0] += 1 if _jsonable(c) == expected else 0
+        for mid, (outcome, value, _sc) in vals.items():
+            if outcome == "value":
+                cell = acc[lo][mid]
+                cell[1] += 1
+                cell[0] += 1 if value == expected else 0
+    out = []
+    for lo in sorted(acc):
+        row: dict[str, Any] = {"lo": lo, "hi": round(lo + width, 6), "n": max(v[1] for v in acc[lo].values())}
+        row["accuracy"] = {name: {"n": v[1], "accuracy": round(v[0] / v[1], 4)} for name, v in acc[lo].items() if v[1]}
+        out.append(row)
+    return out
+
+
+def band(
+    receipts: Iterable[dict[str, Any]],
+    truth: dict[str, Any],
+    key: Callable[[dict[str, Any]], str],
+    member: str,
+    *,
+    width: float = 0.05,
+    positive: Any = True,
+) -> list[dict[str, Any]]:
+    """Where a scoring member abstained, what was the truth, by score bucket?
+
+    This is the escalation band made visible: the lowest bucket at which the
+    positive rate clears the precision you want is where a code member could
+    stop abstaining and answer. Buckets are ``[lo, lo + width)`` on the
+    abstention's ``score``; a member whose abstentions carry no score
+    contributes nothing here.
+    """
+    buckets: dict[float, list[int]] = defaultdict(lambda: [0, 0])
+    pos = _jsonable(positive)
+    for r in receipts:
+        k = key(r)
+        if k not in truth:
+            continue
+        for mid, (outcome, _value, sc) in _member_values(r).items():
+            if mid == member and outcome == "abstained" and sc is not None:
+                lo = _bucket(sc, width)
+                b = buckets[lo]
+                b[0] += 1
+                b[1] += 1 if _jsonable(truth[k]) == pos else 0
+    return [{"lo": lo, "hi": round(lo + width, 6), "n": n, "positiveRate": round(pos / n, 4)}
+            for lo, (n, pos) in sorted(buckets.items())]
 
 
 def main(argv: list[str] | None = None) -> int:

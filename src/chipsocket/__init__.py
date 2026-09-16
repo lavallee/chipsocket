@@ -31,7 +31,7 @@ from chipsocket.members import (
     code,
     model,
 )
-from chipsocket.report import load_receipts, summarize
+from chipsocket.report import band, by_band, load_receipts, score, summarize
 from chipsocket.socket import (
     BOUNDARY_TRIGGERS,
     OPERATIONS_TRIGGERS,
@@ -71,10 +71,13 @@ __all__ = [
     "Socket",
     "SocketExhausted",
     "TransportFailure",
+    "band",
     "baseline",
+    "by_band",
     "code",
     "contract",
     "load_receipts",
     "model",
+    "score",
     "summarize",
 ]
