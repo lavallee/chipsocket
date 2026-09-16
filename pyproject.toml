@@ -1,0 +1,56 @@
+[project]
+name = "chipsocket"
+version = "0.1.0"
+description = "chipsocket — one contract, several live implementations: the socket runner for chip"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+readme = "README.md"
+authors = [{ name = "Marc Lavallee" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+# The only dependency, by design: the runner is the second host, and a second
+# host that imports the first is not one. `somm` is an optional extra.
+dependencies = ["chipspec>=0.3"]
+
+[project.optional-dependencies]
+somm = ["somm>=0.16"]
+
+[project.scripts]
+chipsocket = "chipsocket.report:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/lavallee/chipsocket"
+Repository = "https://github.com/lavallee/chipsocket"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chipsocket"]
+
+[tool.uv.sources]
+chipspec = { path = "../chip", editable = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501", "SIM105", "SIM117"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --import-mode=importlib"

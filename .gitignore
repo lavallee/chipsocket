@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Environments
+.venv/
+.env
+.env.*
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local data
+.somm/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# uv
+uv.lock.bak
+
+# Editor
+.vscode/
+.idea/
+*.swp
