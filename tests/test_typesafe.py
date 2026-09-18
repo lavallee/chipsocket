@@ -78,6 +78,9 @@ def test_gateway_as_a_scored_member_that_abstains_when_flat():
     with pytest.raises(SocketExhausted):
         s2({"a": "x", "b": "y"})
     assert receipts[1]["attempts"][0]["outcome"] == "abstained" and receipts[1]["attempts"][0]["score"] == 0.55
+    # the flat answer was still a paid call, and the receipt says so
+    assert receipts[1]["attempts"][0]["costUsd"] == pytest.approx(500 / 1e6 * 0.042)
+    assert receipts[1]["cost"]["usd"] == pytest.approx(500 / 1e6 * 0.042)
 
 
 def test_errors_are_typed_and_key_lookup(tmp_path, monkeypatch):

@@ -43,6 +43,9 @@ class Abstain:
 
     reason: str
     score: float | None = None
+    #: What producing the abstention cost. A model member that asked and found
+    #: the distribution flat still paid for the call; a budget must see it.
+    cost_usd: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,7 +198,7 @@ def model(
         gr = _to_gateway_result(raw)
         data = gr.data
         if isinstance(data, Abstain):
-            return data
+            return Abstain(data.reason, data.score, cost_usd=data.cost_usd or gr.cost_usd)
         if parser is not None and not _already_parsed(data, result):
             try:
                 data = parser(data)
@@ -206,7 +209,7 @@ def model(
         # distribution was flat) or an Answer carrying a score. The gateway's
         # cost and tuple still belong on the record either way.
         if isinstance(data, Abstain):
-            return data
+            return Abstain(data.reason, data.score, cost_usd=gr.cost_usd)
         if isinstance(data, Answer):
             return Answer(value=data.value, score=data.score, cost_usd=gr.cost_usd,
                           tuple_key=data.tuple_key or gr.tuple_key or profile, meta={**meta, **data.meta})

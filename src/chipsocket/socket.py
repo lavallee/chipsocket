@@ -324,7 +324,8 @@ class Socket:
             return Attempt(m, trigger, "error", t0, self.clock(), reason=f"{type(exc).__name__}: {exc}")
         t1 = self.clock()
         if isinstance(out, Abstain):
-            return Attempt(m, trigger, "abstained", t0, t1, reason=out.reason, score=out.score)
+            return Attempt(m, trigger, "abstained", t0, t1, reason=out.reason, score=out.score,
+                           cost_usd=out.cost_usd)
         if not isinstance(out, Answer):
             return Attempt(m, trigger, "error", t0, t1, reason=f"member returned {type(out).__name__}")
         violated = self._violation(out.value)
