@@ -201,8 +201,16 @@ def model(
                 data = parser(data)
             except Exception as exc:
                 raise SchemaFailure(f"{type(exc).__name__}: {exc}") from exc
-        return Answer(value=data, cost_usd=gr.cost_usd, tuple_key=gr.tuple_key or profile,
-                      meta={"model": gr.model} if gr.model else {})
+        meta = {"model": gr.model} if gr.model else {}
+        # A parser may decide, not just decode: it can return an Abstain (the
+        # distribution was flat) or an Answer carrying a score. The gateway's
+        # cost and tuple still belong on the record either way.
+        if isinstance(data, Abstain):
+            return data
+        if isinstance(data, Answer):
+            return Answer(value=data.value, score=data.score, cost_usd=gr.cost_usd,
+                          tuple_key=data.tuple_key or gr.tuple_key or profile, meta={**meta, **data.meta})
+        return Answer(value=data, cost_usd=gr.cost_usd, tuple_key=gr.tuple_key or profile, meta=meta)
 
     return Member(id=id or profile, kind=kind, digest=digest, call=call, profile=profile)
 

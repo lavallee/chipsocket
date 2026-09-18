@@ -19,6 +19,7 @@ dependencies = ["chipspec>=0.3"]
 
 [project.optional-dependencies]
 somm = ["somm>=0.16"]
+typesafe = ["typesafe-sdk>=0.6"]
 
 [project.scripts]
 chipsocket = "chipsocket.report:main"
