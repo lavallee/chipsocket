@@ -136,3 +136,29 @@ def test_cuts_withhold_a_thinly_supported_cut():
     assert c.lo == 0.3
     assert c.hi is None and c.above == {"n": 15, "accuracy": 1.0, "constant": "positive", "thin": True}
     assert c.closes == round(300 / 315, 4)
+
+
+def test_thin_buckets_are_pooled_not_skipped_over():
+    """A bucket under min_bucket is judged with its neighbours, never stepped past.
+
+    Below: a solid negative bucket, then a thin bucket that is all positive, then a
+    solid negative one. Skipping the thin bucket would extend ``lo`` over it and
+    close positives as negative; pooling it with the next bucket judges them
+    together and stops. Above: a sparse tail that never fills a pool is not closed.
+    """
+    from chipsocket.learn import cuts
+
+    def receipt(i, score):
+        return {"input": {"k": i}, "answeredBy": "code:s@sha256:0", "attempts": [
+            {"member": "code:s@sha256:0", "outcome": "abstained", "score": score}], "shadows": []}
+
+    rows, truth = [], {}
+    i = 0
+    for score, positive in [(0.05, False)] * 20 + [(0.15, True)] * 4 + [(0.25, False)] * 20:
+        rows.append(receipt(i, score)); truth[str(i)] = positive; i += 1
+    for score in (0.95, 0.96):  # a sparse positive tail, under min_bucket, never judged
+        rows.append(receipt(i, score)); truth[str(i)] = True; i += 1
+    c = cuts(rows, truth, key=lambda r: str(r["input"]["k"]), scorer="s", width=0.1, min_n=5, min_bucket=10)
+    # [0.0,0.1) alone passes (20/20); the pool [0.1,0.3) is 20 negative of 24 = 83% and fails.
+    assert c.lo == 0.1 and c.below["n"] == 20 and c.below["accuracy"] == 1.0
+    assert c.hi is None and c.above == {}

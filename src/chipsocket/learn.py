@@ -91,9 +91,13 @@ def cuts(
     ``precision`` of that bucket; walking down from the top, ``hi`` extends
     over each bucket while the positive constant is right on at least
     ``precision`` of it. A bucket with fewer than ``min_bucket`` inputs is
-    skipped rather than judged. The cut is kept only if at least ``min_n``
-    inputs lie on its side; otherwise it is ``None`` and ``below`` / ``above``
-    say how thin the support was.
+    not judged on its own: it is pooled with the next bucket(s) in the
+    direction of the walk until the pool holds ``min_bucket`` inputs, and the
+    pool is judged as one. A pool that never fills (the sparse tail) is not
+    judged and the cut does not extend over it, so every input a cut closes
+    sat in a bucket that met the bar. The cut is kept only if at least
+    ``min_n`` inputs lie on its side; otherwise it is ``None`` and ``below`` /
+    ``above`` say how thin the support was.
 
     The criterion is per bucket, not cumulative, on purpose. A cumulative
     precision floor lets a mass of easy inputs at the far end carry a cut over
@@ -133,16 +137,22 @@ def cuts(
     keys = sorted(buckets)
 
     def walk(order: list[float], want_positive: bool) -> float | None:
-        """The boundary reached while each judged bucket meets the bar."""
+        """The boundary reached while each judged pool of buckets meets the bar."""
         edge: float | None = None
+        total = pos = 0
+        far: float | None = None  # the far end of the pool being filled
         for k in order:
-            total, pos = buckets[k]
+            t, q = buckets[k]
+            total += t
+            pos += q
+            far = round(k + width, 6) if not want_positive else k
             if total < min_bucket:
-                continue
+                continue  # keep pooling; this pool is not judged yet
             acc = (pos if want_positive else total - pos) / total
             if acc < precision:
                 break
-            edge = round(k + width, 6) if not want_positive else k
+            edge = far
+            total = pos = 0
         return edge
 
     lo = walk(keys, False)

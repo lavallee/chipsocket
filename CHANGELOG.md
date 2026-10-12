@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-12
+
+### Fixed
+
+- `learn.cuts` pooled thin buckets instead of stepping over them. A bucket under
+  `min_bucket` used to be skipped in the walk but still closed by the cut that
+  extended past it, so a cut's reported support accuracy could fall under the
+  precision bar (seen on george's disposition labels: 92% with the bar at 95%).
+  Thin buckets are now pooled with the next bucket(s) in the walk direction and
+  judged together; a sparse tail that never fills a pool is not closed. gabe's
+  three labelled days learn the same cuts as before.
+
 ## [0.2.1] - 2026-10-12
 
 ### Changed
