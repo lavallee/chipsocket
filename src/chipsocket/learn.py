@@ -20,7 +20,6 @@ shadow first; promote it when a second day's receipts agree.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -28,6 +27,7 @@ from typing import Any
 from chipsocket._record import jsonable, sha
 from chipsocket.members import Abstain, Answer, Member
 from chipsocket.report import Compare, Key, _equal, labelled, member_values
+from chipsocket.report import bucket as _bucket
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +48,8 @@ class Cuts:
     min_n: int
     labelled: int
     scored: int
+    #: Support behind each cut: ``n``, ``accuracy``, ``constant``, and ``thin``
+    #: when the support fell under ``min_n`` and the cut was withheld.
     below: dict[str, Any] = field(default_factory=dict)
     above: dict[str, Any] = field(default_factory=dict)
     evidence: str = ""
@@ -63,7 +65,8 @@ class Cuts:
     @property
     def closes(self) -> float | None:
         """Share of scored inputs a member on these cuts would answer."""
-        n = self.below.get("n", 0) + self.above.get("n", 0)
+        n = (self.below.get("n", 0) if self.lo is not None else 0) + (
+            self.above.get("n", 0) if self.hi is not None else 0)
         return round(n / self.scored, 4) if self.scored else None
 
 
@@ -77,21 +80,31 @@ def cuts(
     precision: float = 0.95,
     width: float = 0.05,
     min_n: int = 30,
+    min_bucket: int = 10,
     compare: Compare | None = None,
 ) -> Cuts:
     """Find the cut points where a constant beats asking, from labelled receipts.
 
     Reads ``scorer``'s score off every labelled receipt it ran on, answered or
-    abstained. Candidate boundaries are multiples of ``width``. ``lo`` is the
-    largest boundary such that at least ``min_n`` inputs score below it and
-    the negative constant is right on at least ``precision`` of them; ``hi``
-    is the smallest boundary such that at least ``min_n`` inputs score at or
-    above it and the positive constant is right on at least ``precision``.
-    Both are cumulative from the end, not per bucket: a cut is a promise about
-    everything on its side of the line.
+    abstained, and buckets it by ``width``. Walking up from the bottom, ``lo``
+    extends over each bucket while the negative constant is right on at least
+    ``precision`` of that bucket; walking down from the top, ``hi`` extends
+    over each bucket while the positive constant is right on at least
+    ``precision`` of it. A bucket with fewer than ``min_bucket`` inputs is
+    skipped rather than judged. The cut is kept only if at least ``min_n``
+    inputs lie on its side; otherwise it is ``None`` and ``below`` / ``above``
+    say how thin the support was.
 
-    If the two bands would overlap, both are dropped: a band that meets the
-    bar from both ends is a score that does not separate anything.
+    The criterion is per bucket, not cumulative, on purpose. A cumulative
+    precision floor lets a mass of easy inputs at the far end carry a cut over
+    a band where a model is more accurate than the constant: on one labelled
+    day the band [0.15, 0.30) had the constant right 87.8% of the time and the
+    model 91.1%, and a cumulative floor of 95% still put the cut at 0.30
+    because the 4,087 inputs below 0.15 were 99% negative. The cut is a
+    promise about each input it closes, so each bucket has to earn it.
+
+    If the two bands would overlap, both are dropped: a score that meets the
+    bar from both ends does not separate anything.
     """
     if not 0 < precision <= 1:
         raise ValueError("precision must be in (0, 1]")
@@ -112,29 +125,48 @@ def cuts(
     if not rows:
         return base
 
-    scores = sorted(rows, key=lambda t: t[1])
-    lo_b = math.floor(scores[0][1] / width) * width
-    hi_b = math.ceil(scores[-1][1] / width) * width
-    boundaries = [round(lo_b + i * width, 6) for i in range(int(round((hi_b - lo_b) / width)) + 2)]
+    buckets: dict[float, list[int]] = {}
+    for _, s, p in rows:
+        b = buckets.setdefault(_bucket(s, width), [0, 0])
+        b[0] += 1
+        b[1] += 1 if p else 0
+    keys = sorted(buckets)
 
-    lo: float | None = None
-    below: dict[str, Any] = {}
-    for b in boundaries:
-        under = [p for _, s, p in scores if s < b]
-        if len(under) < min_n:
-            continue
-        acc = 1 - sum(under) / len(under)
-        if acc >= precision:
-            lo, below = b, {"n": len(under), "accuracy": round(acc, 4), "constant": "negative"}
-    hi: float | None = None
-    above: dict[str, Any] = {}
-    for b in reversed(boundaries):
-        over = [p for _, s, p in scores if s >= b]
-        if len(over) < min_n:
-            continue
-        acc = sum(over) / len(over)
-        if acc >= precision:
-            hi, above = b, {"n": len(over), "accuracy": round(acc, 4), "constant": "positive"}
+    def walk(order: list[float], want_positive: bool) -> float | None:
+        """The boundary reached while each judged bucket meets the bar."""
+        edge: float | None = None
+        for k in order:
+            total, pos = buckets[k]
+            if total < min_bucket:
+                continue
+            acc = (pos if want_positive else total - pos) / total
+            if acc < precision:
+                break
+            edge = round(k + width, 6) if not want_positive else k
+        return edge
+
+    lo = walk(keys, False)
+    hi = walk(list(reversed(keys)), True)
+
+    def support(edge: float | None, side: str, constant: str) -> dict[str, Any]:
+        if edge is None:
+            return {}
+        if side == "below":
+            on = [p for _, s, p in rows if s < edge]
+            acc = 1 - sum(on) / len(on) if on else 0.0
+        else:
+            on = [p for _, s, p in rows if s >= edge]
+            acc = sum(on) / len(on) if on else 0.0
+        return {"n": len(on), "accuracy": round(acc, 4), "constant": constant}
+
+    below = support(lo, "below", "negative")
+    above = support(hi, "above", "positive")
+    if lo is not None and below.get("n", 0) < min_n:
+        below["thin"] = True
+        lo = None
+    if hi is not None and above.get("n", 0) < min_n:
+        above["thin"] = True
+        hi = None
     if lo is not None and hi is not None and lo > hi:
         lo, hi, below, above = None, None, {}, {}
     return Cuts(scorer=scorer, lo=lo, hi=hi, precision=precision, width=width, min_n=min_n,

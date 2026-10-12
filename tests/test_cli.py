@@ -35,10 +35,10 @@ def test_report_score_band_cuts(tmp_path, capsys):
     assert [r["lo"] for r in rows] == [0.2, 0.4, 0.6]
 
     assert main(["cuts", str(receipts), "--truth", str(truth), "--key", "input.id", "--scorer", "lex",
-                 "--width", "0.1", "--min-n", "5"]) == 0
+                 "--width", "0.1", "--min-n", "5", "--min-bucket", "4"]) == 0
     c = json.loads(capsys.readouterr().out)
-    assert c["lo"] == 0.5 and c["hi"] == 0.5 or (c["lo"] is not None and c["hi"] is not None)
-    assert c["closes"] is not None
+    assert c["lo"] == 0.5 and c["hi"] == 0.5, c
+    assert c["closes"] == 1.0
 
 
 def test_truth_formats_and_failures(tmp_path, capsys):

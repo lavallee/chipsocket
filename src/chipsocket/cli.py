@@ -94,7 +94,7 @@ def cmd_band(args: argparse.Namespace) -> int:
 def cmd_cuts(args: argparse.Namespace) -> int:
     rs, truth, key = _labelled(args)
     c = learn.cuts(rs, truth, key, scorer=args.scorer, positive=_positive(args.positive),
-                   precision=args.precision, width=args.width, min_n=args.min_n)
+                   precision=args.precision, width=args.width, min_n=args.min_n, min_bucket=args.min_bucket)
     _emit({**c.to_dict(), "closes": c.closes})
     return 0 if c.scored else 1
 
@@ -122,7 +122,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scorer", required=True, help="the scoring member id")
     p.add_argument("--precision", type=float, default=0.95)
     p.add_argument("--width", type=float, default=0.05)
-    p.add_argument("--min-n", type=int, default=30, dest="min_n")
+    p.add_argument("--min-n", type=int, default=30, dest="min_n", help="inputs a cut needs on its side")
+    p.add_argument("--min-bucket", type=int, default=10, dest="min_bucket", help="inputs a bucket needs to be judged")
     return parser
 
 

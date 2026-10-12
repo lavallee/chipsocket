@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-12
+
+### Changed
+- `learn.cuts` judges each score bucket on its own instead of applying the
+  precision bar cumulatively from the end. The second labelled day in gabe
+  showed why: 4,087 inputs below 0.15 that were 99% negative carried a
+  cumulative 95% floor over the band [0.15, 0.30), where the constant was
+  right 87.8% of the time and the model 91.1%, and put the cut at 0.30. A cut
+  is a promise about each input it closes, so each bucket has to earn it.
+  New `min_bucket` (default 10) skips buckets too small to judge; `below` /
+  `above` carry `thin: true` when a cut was withheld for having fewer than
+  `min_n` inputs behind it. `Cuts.closes` counts only cuts that exist.
+- `chipsocket cuts` takes `--min-bucket`.
+
 ## [0.2.0] - 2026-10-12
 
 The three shapes two production sockets each hand-rolled are now in the

@@ -102,3 +102,37 @@ def test_cut_member_answers_outside_and_abstains_inside():
     for r in receipts:
         by[r["answeredBy"].split(":")[1].split("@")[0]] = by.get(r["answeredBy"].split(":")[1].split("@")[0], 0) + 1
     assert by["lex-cuts"] >= 60 and by["model"] >= 30
+
+
+def test_cuts_are_per_bucket_not_cumulative():
+    """A mass of easy negatives at the bottom must not carry the cut over a
+    band where the constant is worse than the bar (the second gabe day)."""
+    rng = random.Random(3)
+    rows = []
+    for i in range(400):   # below 0.2: 99% negative
+        rows.append((f"a{i}", rng.uniform(0.0, 0.2), rng.random() < 0.01))
+    for i in range(150):   # [0.2, 0.4): 88% negative — the model's band
+        rows.append((f"b{i}", rng.uniform(0.2, 0.4), rng.random() < 0.12))
+    for i in range(100):   # [0.4, 0.6): mixed
+        rows.append((f"c{i}", rng.uniform(0.4, 0.6), rng.random() < 0.5))
+    for i in range(60):    # >= 0.6: all positive
+        rows.append((f"d{i}", rng.uniform(0.6, 1.0), True))
+    truth = {k: y for k, _, y in rows}
+    c = cuts(_receipts(rows), truth, key=lambda r: r["input"]["id"], scorer="lex", precision=0.95, width=0.1, min_n=30)
+    assert c.lo == 0.2, c.to_dict()
+    assert c.hi == 0.6, c.to_dict()
+    assert c.below["n"] == 400 and c.above["n"] == 60
+    # a cumulative floor would have put lo at 0.4: 550 inputs, ~96% negative
+    under = [y for _, s, y in rows if s < 0.4]
+    assert 1 - sum(under) / len(under) >= 0.95
+
+
+def test_cuts_withhold_a_thinly_supported_cut():
+    rng = random.Random(5)
+    rows = [(f"a{i}", rng.uniform(0.0, 0.3), rng.random() < 0.01) for i in range(300)]
+    rows += [(f"d{i}", rng.uniform(0.9, 1.0), True) for i in range(15)]
+    truth = {k: y for k, _, y in rows}
+    c = cuts(_receipts(rows), truth, key=lambda r: r["input"]["id"], scorer="lex", width=0.1, min_n=30, min_bucket=5)
+    assert c.lo == 0.3
+    assert c.hi is None and c.above == {"n": 15, "accuracy": 1.0, "constant": "positive", "thin": True}
+    assert c.closes == round(300 / 315, 4)

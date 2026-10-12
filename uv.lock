@@ -94,7 +94,7 @@ wheels = [
 
 [[package]]
 name = "chipsocket"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "chipspec" },
@@ -132,7 +132,7 @@ dev = [
 
 [[package]]
 name = "chipspec"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "../chip" }
 
 [package.metadata]
