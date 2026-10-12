@@ -1,6 +1,6 @@
 [project]
 name = "chipsocket"
-version = "0.1.0"
+version = "0.2.0"
 description = "chipsocket — one contract, several live implementations: the socket runner for chip"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -22,12 +22,13 @@ somm = ["somm>=0.17"]
 typesafe = ["typesafe-sdk>=0.6"]
 
 [project.scripts]
-chipsocket = "chipsocket.report:main"
+chipsocket = "chipsocket.cli:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
+    "mypy>=1.10",
 ]
 
 [project.urls]
@@ -42,11 +43,9 @@ build-backend = "hatchling.build"
 packages = ["src/chipsocket"]
 
 [tool.uv.sources]
+# chipspec is not on PyPI yet (trusted publisher pending), so the sibling
+# checkout is the source. CI clones lavallee/chip to ../chip for the same reason.
 chipspec = { path = "../chip", editable = true }
-# Sibling checkout for local development; published metadata keeps the
-# versioned extra above.
-somm = { path = "../somm/packages/somm", editable = true }
-somm-core = { path = "../somm/packages/somm-core", editable = true }
 
 [tool.ruff]
 line-length = 100
@@ -59,3 +58,10 @@ ignore = ["E501", "SIM105", "SIM117"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --import-mode=importlib"
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+warn_unused_ignores = true
+check_untyped_defs = true
+ignore_missing_imports = true

@@ -116,7 +116,7 @@ class TypeSafeGateway:
         try:
             from typesafe_sdk import TypeSafeAPIError, TypeSafeError
         except Exception:  # pragma: no cover - sdk absent; the generic path below still types
-            TypeSafeAPIError = TypeSafeError = ()  # type: ignore[assignment]
+            TypeSafeAPIError = TypeSafeError = ()
         try:
             resp = self.client.system_one(state=state, questions=questions, model=self.model, timeout=self.timeout)
         except TypeSafeAPIError as exc:  # 4xx/5xx after retries

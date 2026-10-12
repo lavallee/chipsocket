@@ -11,8 +11,6 @@ that wants sockets embeds this behind its own envelope.
 
 from __future__ import annotations
 
-import dataclasses
-import json
 import random
 import time
 import uuid
@@ -22,7 +20,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from chipsocket.members import Abstain, Answer, Member, MemberFailure, _sha, code
+from chipsocket._record import jsonable, sha
+from chipsocket.members import Abstain, Answer, Member, MemberFailure, code
+from chipsocket.sinks import JsonlSink
 
 RECEIPT_SCHEMA = "chip.socket-receipt/v0alpha1"
 
@@ -58,6 +58,9 @@ TERMINAL_REASONS: dict[str, str] = {
     "exhausted": "failed",
 }
 
+Sink = Callable[[dict[str, Any]], None]
+Invariant = Callable[[Any], "bool | None"]
+
 
 class SocketExhausted(Exception):
     """Every member abstained or failed. The receipt is attached."""
@@ -65,10 +68,6 @@ class SocketExhausted(Exception):
     def __init__(self, receipt: dict[str, Any]):
         super().__init__(f"socket {receipt.get('socket')!r} exhausted: no member answered")
         self.receipt = receipt
-
-
-class InvariantError(Exception):
-    """A value failed one of the contract's invariants."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +109,7 @@ class Attempt:
         if self.outcome in ("value", "invariant"):
             # A value that failed the invariants and was replaced stays on the
             # receipt: a repair that hides what it repaired is not a record.
-            out["value"] = _jsonable(clean(self.value))
+            out["value"] = jsonable(clean(self.value))
         if self.score is not None:
             out["score"] = self.score
         if self.reason:
@@ -131,34 +130,16 @@ class Run:
     answered_by: Member
 
 
-class JsonlSink:
-    """Append one JSON document per line. The default receipt and harvest sink."""
-
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-
-    def __call__(self, document: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(document, separators=(",", ":"), default=str) + "\n")
-
-
 def _identity(x: Any) -> Any:
     return x
 
 
-def _jsonable(v: Any) -> Any:
-    """Make a value record-shaped without asking the caller to: dataclasses and
-    pydantic models become dicts; everything else is left for the sink."""
-    if dataclasses.is_dataclass(v) and not isinstance(v, type):
-        return dataclasses.asdict(v)
-    dump = getattr(v, "model_dump", None)
-    if callable(dump):
-        try:
-            return dump()
-        except Exception:
-            return v
-    return v
+def _equal(a: Any, b: Any) -> bool:
+    return bool(a == b)
+
+
+def _as_sink(s: Sink | str | Path | None) -> Sink | None:
+    return JsonlSink(s) if isinstance(s, (str, Path)) else s
 
 
 class Socket:
@@ -177,9 +158,9 @@ class Socket:
         *,
         input: Any = None,
         output: Any = None,
-        invariants: Iterable[Callable[[Any], bool | None]] = (),
-        sink: Callable[[dict[str, Any]], None] | None = None,
-        harvest: Callable[[dict[str, Any]], None] | None = None,
+        invariants: Iterable[Invariant] = (),
+        sink: Sink | str | Path | None = None,
+        harvest: Sink | str | Path | None = None,
         clean: Callable[[Any], Any] | None = None,
         compare: Callable[[Any, Any], bool] | None = None,
         rng: random.Random | None = None,
@@ -189,10 +170,10 @@ class Socket:
         self.input = input
         self.output = output
         self.invariants = tuple(invariants)
-        self.sink = sink
-        self.harvest = harvest
+        self.sink = _as_sink(sink)
+        self.harvest = _as_sink(harvest)
         self.clean = clean or _identity
-        self.compare = compare or (lambda a, b: a == b)
+        self.compare = compare or _equal
         self.rng = rng or random.Random()
         self.clock = clock or time.time
         self.members: list[Member] = []
@@ -232,11 +213,15 @@ class Socket:
         self.canary_spec = CanarySpec(member=m, fraction=fraction)
         return self
 
-    def _check_new(self, m: Member) -> None:
-        seen = {x.id for x in self.members} | {s.member.id for s in self.shadows}
+    def seated(self) -> list[Member]:
+        """Every member on this socket: chain, then shadows, then the canary."""
+        out = list(self.members) + [s.member for s in self.shadows]
         if self.canary_spec is not None:
-            seen.add(self.canary_spec.member.id)
-        if m.id in seen:
+            out.append(self.canary_spec.member)
+        return out
+
+    def _check_new(self, m: Member) -> None:
+        if m.id in {x.id for x in self.seated()}:
             raise ValueError(f"member id {m.id!r} is already seated in socket {self.id!r}")
 
     @property
@@ -244,7 +229,19 @@ class Socket:
         names = [getattr(self.input, "__qualname__", repr(self.input)),
                  getattr(self.output, "__qualname__", repr(self.output))]
         names += [getattr(f, "__qualname__", repr(f)) for f in self.invariants]
-        return _sha(self.id, *names)
+        return sha(self.id, *names)
+
+    def describe(self) -> dict[str, Any]:
+        """The socket as a record: contract digest and every seated member."""
+        return {
+            "socket": self.id,
+            "contract": self.contract_digest,
+            "members": [m.ref for m in self.members],
+            "shadows": [{"member": s.member.ref, "sample": s.sample, "budgetUsdDaily": s.budget_usd_daily,
+                         "noise": s.noise} for s in self.shadows],
+            "canary": ({"member": self.canary_spec.member.ref, "fraction": self.canary_spec.fraction}
+                       if self.canary_spec else None),
+        }
 
     # -- the call ---------------------------------------------------------------
 
@@ -255,16 +252,37 @@ class Socket:
         """Apply the strategy to one input and write one receipt."""
         if not self.members and self.canary_spec is None:
             raise ValueError(f"socket {self.id!r} has no members")
-        run_id = f"srun_{uuid.uuid4().hex[:20]}"
-        ctx = {"run": run_id, "socket": self.id}
-        started = self.clock()
         chain = list(self.members)
-        strategy = "first-success"
-        is_canary = False
+        strategy, is_canary = "first-success", False
         if self.canary_spec is not None and self.rng.random() < self.canary_spec.fraction:
             chain = [self.canary_spec.member, *chain]
             strategy, is_canary = "canary", True
+        return self._execute(x, chain, strategy, is_canary, with_shadows=True)
 
+    def serve(self, x: Any) -> Answer | None:
+        """The deterministic-only path: run the code members, decline otherwise.
+
+        This is what a somm workload handler calls. It writes a receipt like any
+        call, with strategy ``first-success`` over the code members only and no
+        shadows, and returns ``None`` where the chain would have escalated to a
+        model — so the provider chain answers under the same workload id.
+        """
+        codes = [m for m in self.members if m.kind == "code"]
+        if not codes:
+            return None
+        try:
+            r = self._execute(x, codes, "first-success", False, with_shadows=False)
+        except SocketExhausted:
+            return None
+        return Answer(value=r.value, tuple_key=r.answered_by.ref)
+
+    # -- internals ---------------------------------------------------------------
+
+    def _execute(self, x: Any, chain: list[Member], strategy: str, is_canary: bool, *,
+                 with_shadows: bool) -> Run:
+        run_id = f"srun_{uuid.uuid4().hex[:20]}"
+        ctx = {"run": run_id, "socket": self.id}
+        started = self.clock()
         attempts: list[Attempt] = []
         answered: Attempt | None = None
         trigger = "primary"
@@ -278,7 +296,7 @@ class Socket:
 
         shadows: list[dict[str, Any]] = []
         noise: dict[str, Any] | None = None
-        if answered is not None and self.shadows:
+        if with_shadows and answered is not None and self.shadows:
             shadows, noise = self._run_shadows(x, ctx, answered)
 
         ended = self.clock()
@@ -290,29 +308,6 @@ class Socket:
         if answered is None:
             raise SocketExhausted(receipt)
         return Run(value=answered.value, receipt=receipt, answered_by=answered.member)
-
-    def serve(self, x: Any) -> Answer | None:
-        """The deterministic-only path: run the code members, decline otherwise.
-
-        This is what a somm workload handler calls. It writes a receipt like any
-        call, with strategy ``first-success`` over the code members only, and
-        returns ``None`` where the chain would have escalated to a model — so
-        the provider chain answers under the same workload id.
-        """
-        codes = [m for m in self.members if m.kind == "code"]
-        if not codes:
-            return None
-        sub = Socket(self.id, input=self.input, output=self.output, invariants=self.invariants,
-                     sink=self.sink, harvest=self.harvest, clean=self.clean, compare=self.compare,
-                     rng=self.rng, clock=self.clock)
-        sub.members = codes
-        try:
-            r = sub.run(x)
-        except SocketExhausted:
-            return None
-        return Answer(value=r.value, tuple_key=r.answered_by.ref)
-
-    # -- internals ---------------------------------------------------------------
 
     def _attempt(self, m: Member, x: Any, ctx: dict[str, Any], trigger: str) -> Attempt:
         t0 = self.clock()
@@ -329,10 +324,8 @@ class Socket:
         if not isinstance(out, Answer):
             return Attempt(m, trigger, "error", t0, t1, reason=f"member returned {type(out).__name__}")
         violated = self._violation(out.value)
-        if violated:
-            return Attempt(m, trigger, "invariant", t0, t1, value=out.value, score=out.score,
-                           reason=violated, cost_usd=out.cost_usd, tuple_key=out.tuple_key, meta=out.meta)
-        return Attempt(m, trigger, "value", t0, t1, value=out.value, score=out.score,
+        outcome = "invariant" if violated else "value"
+        return Attempt(m, trigger, outcome, t0, t1, value=out.value, score=out.score, reason=violated,
                        cost_usd=out.cost_usd, tuple_key=out.tuple_key, meta=out.meta)
 
     def _violation(self, value: Any) -> str | None:
@@ -397,11 +390,6 @@ class Socket:
         cost = sum(a.cost_usd for a in attempts) + sum(float(s.get("costUsd", 0.0)) for s in shadows)
         if noise:
             cost += float(noise.get("costUsd", 0.0))
-        members = {m.id: m.digest for m in self.members}
-        for s in self.shadows:
-            members[s.member.id] = s.member.digest
-        if self.canary_spec is not None:
-            members[self.canary_spec.member.id] = self.canary_spec.member.digest
         receipt: dict[str, Any] = {
             "schema": RECEIPT_SCHEMA,
             "socket": self.id,
@@ -415,14 +403,14 @@ class Socket:
             "attempts": [a.to_dict(self.clean) for a in attempts],
             "shadows": shadows,
             "noise": noise,
-            "digests": {"contract": self.contract_digest, "members": members},
+            "digests": {"contract": self.contract_digest, "members": {m.id: m.digest for m in self.seated()}},
             "timing": {
                 "startedAt": datetime.fromtimestamp(started, tz=UTC).isoformat(),
                 "endedAt": datetime.fromtimestamp(ended, tz=UTC).isoformat(),
                 "totalMs": round((ended - started) * 1000, 3),
             },
             "cost": {"usd": round(cost, 8)},
-            "input": _jsonable(self.clean(x)),
+            "input": jsonable(self.clean(x)),
         }
         if self.harvest is not None:
             receipt["harvest"] = f"harvest:{self.id}#{run_id}"
@@ -438,7 +426,7 @@ class Socket:
         return {
             "socket": self.id,
             "run": run_id,
-            "input": _jsonable(self.clean(x)),
+            "input": jsonable(self.clean(x)),
             "answeredBy": answered.member.ref if answered is not None else None,
             "triggers": triggers,
             "shadowDisagreed": disagreed,
@@ -451,10 +439,9 @@ def contract(
     id: str | None = None,
     input: Any = None,
     output: Any = None,
-    invariants: Iterable[Callable[[Any], bool | None]] = (),
-    strategy: str = "first-success",
-    sink: Callable[[dict[str, Any]], None] | str | Path | None = None,
-    harvest: Callable[[dict[str, Any]], None] | str | Path | None = None,
+    invariants: Iterable[Invariant] = (),
+    sink: Sink | str | Path | None = None,
+    harvest: Sink | str | Path | None = None,
     clean: Callable[[Any], Any] | None = None,
     compare: Callable[[Any, Any], bool] | None = None,
     rng: random.Random | None = None,
@@ -471,15 +458,11 @@ def contract(
 
         admissible.member(model(gateway, prompt=render, result=Verdict, profile="mid"))
     """
-    if strategy not in STRATEGIES:
-        raise ValueError(f"strategy {strategy!r} is not one of {STRATEGIES}")
 
     def decorate(fn: Callable[[Any], Any]) -> Socket:
         s = Socket(
             id or f"{fn.__module__}.{fn.__qualname__}",
-            input=input, output=output, invariants=invariants,
-            sink=JsonlSink(sink) if isinstance(sink, (str, Path)) else sink,
-            harvest=JsonlSink(harvest) if isinstance(harvest, (str, Path)) else harvest,
+            input=input, output=output, invariants=invariants, sink=sink, harvest=harvest,
             clean=clean, compare=compare, rng=rng, clock=clock,
         )
         s.member(code(fn))

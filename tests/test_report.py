@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pytest
 
 from chipsocket import Abstain, GatewayResult, Socket, code, load_receipts, model, summarize
-from chipsocket.report import main
+from chipsocket.cli import main
 
 
 @dataclass(frozen=True)

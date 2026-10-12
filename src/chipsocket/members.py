@@ -14,6 +14,10 @@ Three kinds:
   instruction. Kept so that "does the model still need this envelope" has a
   standing comparator rather than a one-off.
 
+Two wrappers shape a member without changing its kind: :func:`banded` confines
+it to a score band, and :func:`recorded` seats an answer that was already
+produced elsewhere (the incumbent, in a phase-0 pilot).
+
 The gateway is a callable ``gateway(request: dict) -> GatewayResult | dict``,
 mirroring the host execution contract's ``gateway(request) -> dict``. The
 runner never holds credentials or knows which provider answered; that is the
@@ -22,14 +26,23 @@ gateway's business, and ``chipsocket.somm`` is one gateway.
 
 from __future__ import annotations
 
-import hashlib
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from chipsocket._record import sha, source_digest
+
 #: Closed vocabulary of member kinds.
 KINDS: tuple[str, ...] = ("code", "model", "baseline")
+
+#: The fields a metering gateway may report beside its data. They ride on the
+#: answer's ``meta`` so a receipt joins to the meter's ledger instead of
+#: re-deriving cost and identity.
+METER_FIELDS: tuple[str, ...] = (
+    "call_id", "provider", "tokens_in", "tokens_out", "cache_tokens_in",
+    "reasoning_tokens", "latency_ms", "cost_basis",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,9 +100,9 @@ class TransportFailure(MemberFailure):
 class GatewayResult:
     """What a gateway returns. A plain dict is accepted and treated as ``data``.
 
-    The receipt fields after ``model`` are what a meter can say about the
-    call that produced ``data``; a gateway that cannot say leaves them
-    ``None``. ``call_id`` is the join key to the meter's own ledger.
+    The fields after ``model`` are what a meter can say about the call that
+    produced ``data``; a gateway that cannot say leaves them ``None``.
+    ``call_id`` is the join key to the meter's own ledger.
     """
 
     data: Any
@@ -106,6 +119,9 @@ class GatewayResult:
     cost_basis: str | None = None
 
 
+MemberCall = Callable[[Any, dict[str, Any]], "Answer | Abstain"]
+
+
 @dataclass(frozen=True, slots=True)
 class Member:
     """One implementation of a contract, with a stable identity."""
@@ -113,7 +129,7 @@ class Member:
     id: str
     kind: str
     digest: str
-    call: Callable[[Any, dict[str, Any]], Answer | Abstain]
+    call: MemberCall
     profile: str | None = None
 
     def __post_init__(self) -> None:
@@ -128,24 +144,8 @@ class Member:
         return f"{self.kind}:{self.id}@{self.digest}"
 
 
-def _sha(*parts: str) -> str:
-    h = hashlib.sha256()
-    for part in parts:
-        h.update(part.encode("utf-8"))
-        h.update(b"\0")
-    return "sha256:" + h.hexdigest()[:16]
-
-
-def _source_digest(fn: Callable[..., Any]) -> str:
-    """Digest a function by its source where possible, else by its qualified name.
-
-    Source is the honest identity for a code member: two deployments with the
-    same function name and different bodies must not share receipts.
-    """
-    try:
-        return _sha(inspect.getsource(fn))
-    except (OSError, TypeError):
-        return _sha(getattr(fn, "__module__", ""), getattr(fn, "__qualname__", repr(fn)))
+def _wrap(out: Any) -> Answer | Abstain:
+    return out if isinstance(out, (Answer, Abstain)) else Answer(value=out)
 
 
 def code(fn: Callable[[Any], Any], *, id: str | None = None) -> Member:
@@ -156,18 +156,18 @@ def code(fn: Callable[[Any], Any], *, id: str | None = None) -> Member:
     """
 
     def call(x: Any, _ctx: dict[str, Any]) -> Answer | Abstain:
-        out = fn(x)
-        if isinstance(out, (Answer, Abstain)):
-            return out
-        return Answer(value=out)
+        return _wrap(fn(x))
 
-    return Member(id=id or fn.__name__, kind="code", digest=_source_digest(fn), call=call)
+    return Member(id=id or fn.__name__, kind="code", digest=source_digest(fn), call=call)
 
 
 def _to_gateway_result(raw: Any) -> GatewayResult:
-    if isinstance(raw, GatewayResult):
-        return raw
-    return GatewayResult(data=raw)
+    return raw if isinstance(raw, GatewayResult) else GatewayResult(data=raw)
+
+
+def _already_parsed(data: Any, result: Any) -> bool:
+    """A gateway that validates (somm's generate_structured does) returns an instance."""
+    return inspect.isclass(result) and isinstance(data, result)
 
 
 def model(
@@ -189,11 +189,14 @@ def model(
     also what ``parse`` defaults to when it is callable. The gateway's
     exceptions become :class:`TransportFailure`; a parse failure becomes
     :class:`SchemaFailure`. The member never sees credentials.
+
+    A parser may decide, not just decode: it can return an :class:`Abstain`
+    (the distribution was flat) or an :class:`Answer` carrying a score.
     """
     parser = parse if parse is not None else (result if callable(result) else None)
     template_id = getattr(prompt, "__qualname__", repr(prompt))
     result_id = getattr(result, "__qualname__", None) or getattr(result, "__name__", None) or repr(result)
-    digest = _sha(kind, profile, system, template_id, str(result_id), _source_digest(prompt))
+    digest = sha(kind, profile, system, template_id, result_id, source_digest(prompt))
 
     def call(x: Any, ctx: dict[str, Any]) -> Answer | Abstain:
         rendered = prompt(x)
@@ -201,10 +204,9 @@ def model(
         # A shadow or noise run says so, and names the call it shadows, so a
         # metering gateway can record it as an observation rather than
         # production traffic.
-        if ctx.get("role"):
-            request["role"] = ctx["role"]
-        if ctx.get("source_call_id"):
-            request["source_call_id"] = ctx["source_call_id"]
+        for key in ("role", "source_call_id"):
+            if ctx.get(key):
+                request[key] = ctx[key]
         if isinstance(rendered, dict):
             request.update(rendered)
         else:
@@ -224,17 +226,11 @@ def model(
                 data = parser(data)
             except Exception as exc:
                 raise SchemaFailure(f"{type(exc).__name__}: {exc}") from exc
-        meta = {"model": gr.model} if gr.model else {}
-        # The meter's receipt fields ride on the answer so the socket receipt
-        # can join to the ledger instead of re-deriving cost and identity.
-        for key in ("call_id", "provider", "tokens_in", "tokens_out", "cache_tokens_in",
-                    "reasoning_tokens", "latency_ms", "cost_basis"):
+        meta: dict[str, Any] = {"model": gr.model} if gr.model else {}
+        for key in METER_FIELDS:
             value = getattr(gr, key, None)
             if value is not None:
                 meta[key] = value
-        # A parser may decide, not just decode: it can return an Abstain (the
-        # distribution was flat) or an Answer carrying a score. The gateway's
-        # cost and tuple still belong on the record either way.
         if isinstance(data, Abstain):
             return Abstain(data.reason, data.score, cost_usd=gr.cost_usd)
         if isinstance(data, Answer):
@@ -243,11 +239,6 @@ def model(
         return Answer(value=data, cost_usd=gr.cost_usd, tuple_key=gr.tuple_key or profile, meta=meta)
 
     return Member(id=id or profile, kind=kind, digest=digest, call=call, profile=profile)
-
-
-def _already_parsed(data: Any, result: Any) -> bool:
-    """A gateway that validates (somm's generate_structured does) returns an instance."""
-    return inspect.isclass(result) and isinstance(data, result)
 
 
 def baseline(
@@ -265,3 +256,62 @@ def baseline(
 
     return model(gateway, prompt=prompt, result=result, profile=profile, id=id or f"baseline:{profile}",
                  parse=parse, kind="baseline")
+
+
+def banded(
+    inner: Member,
+    score: Callable[[Any], float | None],
+    lo: float,
+    hi: float,
+    *,
+    reason: str = "outside-band",
+    id: str | None = None,
+) -> Member:
+    """Run ``inner`` only where ``lo <= score(x) < hi``; abstain elsewhere, carrying the score.
+
+    This is how a paid member is kept off the inputs a cheaper member already
+    closes: a shadow that asks about every input spends on calls nothing will
+    ever route to it. The digest includes the band, so moving a cut is a new
+    member on the receipts. An unscored input abstains with ``reason``.
+    """
+    if not lo < hi:
+        raise ValueError("banded: need lo < hi")
+    digest = sha("banded", inner.digest, repr(lo), repr(hi))
+
+    def call(x: Any, ctx: dict[str, Any]) -> Answer | Abstain:
+        s = score(x)
+        if s is None or not (lo <= s < hi):
+            return Abstain(reason, score=s)
+        return inner.call(x, ctx)
+
+    return Member(id=id or inner.id, kind=inner.kind, digest=digest, call=call, profile=inner.profile)
+
+
+def recorded(
+    read: Callable[[Any], Any],
+    *,
+    id: str,
+    digest: str,
+    kind: str = "model",
+    reason: str = "unrecorded",
+) -> Member:
+    """A member whose answer was already produced elsewhere.
+
+    The phase-0 shape: the incumbent stays primary, its verdict is read off the
+    row it already wrote, and shadows run against it at zero extra cost on the
+    primary. ``read(x)`` returns the recorded value, an :class:`Answer` (to
+    carry the tuple that produced it), an :class:`Abstain`, or ``None`` when
+    nothing was recorded. ``kind`` is what the incumbent *was* — a recorded
+    model verdict counted as code would corrupt the closed-by-code share.
+    ``digest`` identifies the incumbent (a treatment hash, a prompt key); a
+    value not already ``sha256:``-prefixed is digested.
+    """
+
+    def call(x: Any, _ctx: dict[str, Any]) -> Answer | Abstain:
+        out = read(x)
+        if out is None:
+            return Abstain(reason)
+        return _wrap(out)
+
+    d = digest if digest.startswith("sha256:") else sha(digest)
+    return Member(id=id, kind=kind, digest=d, call=call)

@@ -71,7 +71,7 @@ class SommGateway:
         try:
             from somm.client import SommStructuredError
         except Exception:  # pragma: no cover - somm absent; the error path below still types
-            SommStructuredError = ()  # type: ignore[assignment]
+            SommStructuredError = ()
         try:
             obj, res = self.client.generate_structured(
                 request.get("prompt", ""),

@@ -368,3 +368,23 @@ def test_schema_failure_when_parse_rejects():
 def test_vocabularies_are_closed():
     assert set(TERMINAL_REASONS.values()) == {"completed", "failed"}
     assert "error" in TRIGGERS and "sampled" in TRIGGERS
+
+
+def test_describe_lists_every_seated_member():
+    s = (make(Collect()).member(code(rules))
+         .shadow(model(FakeGateway(), prompt=str, result=parse_verdict, profile="gold"), sample=0.1, noise=True)
+         .canary(code(lambda c: Verdict("dropped", "c"), id="cand"), fraction=0.2))
+    d = s.describe()
+    assert d["socket"] == "test.admissible" and d["contract"].startswith("sha256:")
+    assert d["members"] == [code(rules).ref]
+    assert d["shadows"][0]["sample"] == 0.1 and d["shadows"][0]["noise"] is True
+    assert d["canary"]["fraction"] == 0.2
+    assert [m.id for m in s.seated()] == ["rules", "gold", "cand"]
+
+
+def test_serve_writes_no_shadows(tmp_path):
+    sink = Collect()
+    gold = FakeGateway()
+    s = make(sink).member(code(rules)).shadow(model(gold, prompt=str, result=parse_verdict, profile="gold"), sample=1.0)
+    assert s.serve("3 things") is not None
+    assert sink[0]["shadows"] == [] and gold.requests == []

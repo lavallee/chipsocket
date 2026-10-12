@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      # chipspec is a sibling path source until it is on PyPI.
+      - name: Check out chip beside this repository
+        run: git clone --depth 1 https://github.com/lavallee/chip ../chip
+      - name: Sync (dev group)
+        run: uv sync --frozen
+      - name: Lint (ruff check)
+        run: uv run ruff check src/ tests/ examples/ --output-format=github
+      - name: Type-check (mypy)
+        run: uv run mypy src/
+      - name: Run tests
+        run: uv run pytest -q
+      - name: Smoke the example and the CLI
+        run: uv run python examples/claim_admissibility.py > /dev/null && uv run chipsocket report /tmp/claims-receipts.jsonl > /dev/null
