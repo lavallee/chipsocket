@@ -357,14 +357,15 @@ class Socket:
             if spec.budget_usd_daily is not None and self._spent_today(spec.member.id) >= spec.budget_usd_daily:
                 shadows.append({"member": spec.member.ref, "trigger": "budget", "outcome": "skipped", "costUsd": 0.0})
                 continue
-            attempt = self._attempt(spec.member, x, ctx, "sampled")
+            shadow_ctx = {**ctx, "role": "shadow", "source_call_id": answered.meta.get("call_id")}
+            attempt = self._attempt(spec.member, x, shadow_ctx, "sampled")
             self._spend(spec.member.id, attempt.cost_usd)
             rec = attempt.to_dict(self.clean)
             if attempt.outcome == "value":
                 rec["agrees"] = self._agrees(attempt.value, answered.value)
             shadows.append(rec)
             if spec.noise and noise is None:
-                again = self._attempt(answered.member, x, ctx, "sampled")
+                again = self._attempt(answered.member, x, shadow_ctx, "sampled")
                 self._spend(answered.member.id, again.cost_usd)
                 noise = {"member": answered.member.ref, "outcome": again.outcome, "costUsd": again.cost_usd}
                 if again.outcome == "value":

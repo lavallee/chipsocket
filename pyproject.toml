@@ -18,7 +18,7 @@ classifiers = [
 dependencies = ["chipspec>=0.3"]
 
 [project.optional-dependencies]
-somm = ["somm>=0.16"]
+somm = ["somm>=0.17"]
 typesafe = ["typesafe-sdk>=0.6"]
 
 [project.scripts]
@@ -43,6 +43,10 @@ packages = ["src/chipsocket"]
 
 [tool.uv.sources]
 chipspec = { path = "../chip", editable = true }
+# Sibling checkout for local development; published metadata keeps the
+# versioned extra above.
+somm = { path = "../somm/packages/somm", editable = true }
+somm-core = { path = "../somm/packages/somm-core", editable = true }
 
 [tool.ruff]
 line-length = 100

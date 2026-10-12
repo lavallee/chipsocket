@@ -14,11 +14,11 @@ Two directions, both inside somm's existing surfaces:
 
 ``somm`` is imported lazily; the runner does not depend on it.
 
-Known gap (somm side): shadow and noise calls should carry
-``observation_role="shadow"`` and ``source_call_id`` on their rows. somm has
-the columns but ``generate_structured`` does not expose them to callers. Until
-it does, shadows are distinguishable by the ``session_id`` they share with the
-primary and by the receipt.
+Shadow and noise calls carry ``observation_role="shadow"`` and the primary's
+``source_call_id`` on their somm rows when the request says so
+(``request["role"]`` / ``request["source_call_id"]``, somm >= 0.17), so they
+stay out of somm's rollups and budgets and join to the call they shadow. They
+also share the run id as ``session_id``.
 """
 
 from __future__ import annotations
@@ -85,6 +85,8 @@ class SommGateway:
                 retries=self.retries,
                 allow_fallback=self.allow_fallback,
                 session_id=request.get("run"),
+                observation_role=request.get("role") or "production",
+                source_call_id=request.get("source_call_id"),
             )
         except SommStructuredError as exc:
             raise SchemaFailure(str(exc)) from exc
@@ -92,11 +94,21 @@ class SommGateway:
             raise TransportFailure(f"{type(exc).__name__}: {exc}") from exc
         provider = getattr(res, "provider", None) or self.provider or ""
         served = getattr(res, "model", None) or self.model or ""
+        # Everything the meter knows about the call travels with the result;
+        # the receipt is then a join to somm's ledger, not a re-derivation.
         return GatewayResult(
             data=obj,
             cost_usd=float(getattr(res, "cost_usd", 0.0) or 0.0),
             tuple_key=f"{provider}/{served}@{request.get('profile', '')}",
             model=served,
+            call_id=getattr(res, "call_id", None),
+            provider=provider or None,
+            tokens_in=getattr(res, "tokens_in", None),
+            tokens_out=getattr(res, "tokens_out", None),
+            cache_tokens_in=getattr(res, "cache_tokens_in", None),
+            reasoning_tokens=getattr(res, "reasoning_tokens", None),
+            latency_ms=getattr(res, "latency_ms", None),
+            cost_basis="reported" if getattr(res, "cost_usd", None) is not None else None,
         )
 
 

@@ -85,12 +85,25 @@ class TransportFailure(MemberFailure):
 
 @dataclass(frozen=True, slots=True)
 class GatewayResult:
-    """What a gateway returns. A plain dict is accepted and treated as ``data``."""
+    """What a gateway returns. A plain dict is accepted and treated as ``data``.
+
+    The receipt fields after ``model`` are what a meter can say about the
+    call that produced ``data``; a gateway that cannot say leaves them
+    ``None``. ``call_id`` is the join key to the meter's own ledger.
+    """
 
     data: Any
     cost_usd: float = 0.0
     tuple_key: str | None = None
     model: str | None = None
+    call_id: str | None = None
+    provider: str | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    cache_tokens_in: int | None = None
+    reasoning_tokens: int | None = None
+    latency_ms: int | None = None
+    cost_basis: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +198,13 @@ def model(
     def call(x: Any, ctx: dict[str, Any]) -> Answer | Abstain:
         rendered = prompt(x)
         request: dict[str, Any] = {"profile": profile, "system": system, "schema": result, "run": ctx.get("run")}
+        # A shadow or noise run says so, and names the call it shadows, so a
+        # metering gateway can record it as an observation rather than
+        # production traffic.
+        if ctx.get("role"):
+            request["role"] = ctx["role"]
+        if ctx.get("source_call_id"):
+            request["source_call_id"] = ctx["source_call_id"]
         if isinstance(rendered, dict):
             request.update(rendered)
         else:
@@ -205,6 +225,13 @@ def model(
             except Exception as exc:
                 raise SchemaFailure(f"{type(exc).__name__}: {exc}") from exc
         meta = {"model": gr.model} if gr.model else {}
+        # The meter's receipt fields ride on the answer so the socket receipt
+        # can join to the ledger instead of re-deriving cost and identity.
+        for key in ("call_id", "provider", "tokens_in", "tokens_out", "cache_tokens_in",
+                    "reasoning_tokens", "latency_ms", "cost_basis"):
+            value = getattr(gr, key, None)
+            if value is not None:
+                meta[key] = value
         # A parser may decide, not just decode: it can return an Abstain (the
         # distribution was flat) or an Answer carrying a score. The gateway's
         # cost and tuple still belong on the record either way.

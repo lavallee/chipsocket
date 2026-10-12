@@ -49,7 +49,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "chipspec", editable = "../chip" },
-    { name = "somm", marker = "extra == 'somm'", specifier = ">=0.16" },
+    { name = "somm", marker = "extra == 'somm'", editable = "../somm/packages/somm" },
     { name = "typesafe-sdk", marker = "extra == 'typesafe'", specifier = ">=0.6" },
 ]
 provides-extras = ["somm", "typesafe"]
@@ -289,25 +289,32 @@ wheels = [
 
 [[package]]
 name = "somm"
-version = "0.16.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.17.0"
+source = { editable = "../somm/packages/somm" }
 dependencies = [
     { name = "httpx" },
     { name = "somm-core" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/74/25/5f82c9a925a9ab3ca6942985ea223c1b743d13aadf859e229aa37f8d0138/somm-0.16.0.tar.gz", hash = "sha256:b20f242959843c75b8ad46bb27cf44ad030ec0937ef3fbe38d46eec6f7e36136", size = 230862, upload-time = "2026-08-19T12:16:29.682Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/28/9b/d03db7515558fa605152c443a812d1937c3598e8049240f0bb2cda026355/somm-0.16.0-py3-none-any.whl", hash = "sha256:634f40f94bc9c9b923d13f957ae5cd2e616e8024600de3f502ae90508b62e8ee", size = 171250, upload-time = "2026-08-19T12:16:28.227Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "jsonschema", marker = "extra == 'jsonschema'", specifier = ">=4" },
+    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.50" },
+    { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.20" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.20" },
+    { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
+    { name = "pydantic", marker = "extra == 'pydantic'", specifier = ">=2" },
+    { name = "somm-core", editable = "../somm/packages/somm-core" },
+    { name = "tiktoken", marker = "extra == 'tokenizers'", specifier = ">=0.7" },
 ]
+provides-extras = ["litellm", "tokenizers", "otel", "pydantic", "jsonschema", "postgres"]
 
 [[package]]
 name = "somm-core"
-version = "0.16.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d1/e5/2276f05fc3e22734cf4e1275cd9fdf4ff7830fc732da5325628aee4f0292/somm_core-0.16.0.tar.gz", hash = "sha256:aa1435c9de1e599aa193098c6dc1fc7dc4086214d68245c8e2f8c261bc618bec", size = 75156, upload-time = "2026-08-19T12:16:28.131Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/03/88/5e1a5601b6fd93a03441832abd0705b480231b82890b202ce9cd1dcb558a/somm_core-0.16.0-py3-none-any.whl", hash = "sha256:301e44333ab97b0234879d8cf09c0bbbb862d62db2bac3ff6594b32a535358ad", size = 78252, upload-time = "2026-08-19T12:16:26.868Z" },
-]
+version = "0.17.0"
+source = { editable = "../somm/packages/somm-core" }
 
 [[package]]
 name = "tenacity"
